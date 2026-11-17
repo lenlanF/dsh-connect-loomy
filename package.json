@@ -1,6 +1,6 @@
 {
   "name": "dsh-connect-loomy",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "type": "module",
   "description": "Native DSH provider for Loomy with an account pool, read-only per-account credits, image generation and a loopback OpenAI endpoint.",

@@ -328,61 +328,114 @@ window.__ModuleLoader__.load({
         try { projection = props.getProjection('modelSelection') } catch {}
       }
       projection = projection || props?.modelSelection || props?.projections?.modelSelection
-      const candidate = (projection?.next ?? projection?.lastUsed)?.provider ?? projection?.provider ?? props?.provider
-      return typeof candidate === 'string' && candidate !== '' ? candidate : undefined
+      const provider = (projection?.next ?? projection?.lastUsed)?.provider ?? projection?.provider ?? props?.provider
+      return typeof provider === 'string' && provider ? provider : undefined
     }
+
     function CreditGate(props) {
       const seat = props?.seat === 'stats' ? 'stats' : 'composer'
       const ownerStatus = props?.status || props?.loomyStatus
       const [liveStatus, setLiveStatus] = React.useState(ownerStatus || null)
       const [liveCredits, setLiveCredits] = React.useState(props?.creditRows || null)
+      const [open, setOpen] = React.useState(false)
+      const [error, setError] = React.useState(false)
+      const [busy, setBusy] = React.useState(false)
+      const inFlight = React.useRef(false)
       const provider = creditProviderOf(props)
       const status = liveStatus || ownerStatus || BOOTSTRAP_STATUS
       const enabled = status?.settings?.creditsEnabled !== false
       const position = status?.settings?.creditPosition || 'composer'
       const minutes = status?.settings?.creditPollMinutes || 5
       const active = enabled && provider === 'loomy' && position === seat
+      const read = React.useCallback(async (force = false) => {
+        if (inFlight.current) return
+        inFlight.current = true
+        setBusy(true)
+        try {
+          if (!force) {
+            const nextStatus = await api('/status', 'GET')
+            const nextCredits = nextStatus?.settings?.creditsEnabled ? await api('/credits', 'GET') : null
+            setLiveStatus(nextStatus)
+            setLiveCredits(nextCredits?.accounts || [])
+          } else {
+            const nextCredits = await api('/credits/refresh', 'POST')
+            setLiveCredits(nextCredits?.accounts || [])
+          }
+          setError(false)
+        } catch { setError(true) }
+        finally { inFlight.current = false; setBusy(false) }
+      }, [])
       React.useEffect(() => {
         if (!active) return undefined
         let cancelled = false
-        const read = async () => {
-          try {
-            const nextStatus = await api('/status', 'GET')
-            const nextCredits = nextStatus?.settings?.creditsEnabled ? await api('/credits', 'GET') : null
-            if (!cancelled) { setLiveStatus(nextStatus); setLiveCredits(nextCredits?.accounts || []) }
-          } catch {}
-        }
-        read()
-        const timer = setInterval(read, minutes * 60 * 1000)
+        const poll = () => { if (!cancelled) read() }
+        poll()
+        const timer = setInterval(poll, minutes * 60 * 1000)
         return () => { cancelled = true; clearInterval(timer) }
-      }, [active, minutes])
+      }, [active, minutes, read])
       if (!active) return null
-      const rows = (props?.creditRows && props.creditRows.length ? props.creditRows : null) || liveCredits || status?.credits?.summary?.accounts || []
-      const failed = rows.filter((r) => !r.ok), ok = rows.filter((r) => r.ok)
-      const total = ok.reduce((sum, r) => sum + (typeof r.total === 'number' ? r.total : 0), 0)
-      const current = ok[0] || rows[0] || {}
-      const state = !rows.length ? 'credit-loading' : failed.length && !ok.length ? 'credit-error' : 'credit-ok'
-      const short = shortAccountLabel(current.label)
-      const value = state === 'credit-ok' ? fmt(total) : '积分不可用'
-      const reason = failed.length ? String(failed[0].error || '原因未知') : ''
+
+      // pool.resolveAll()[0] serves the next chat request. Never sum independent
+      // account balances or silently show a backup account when the first fails.
+      const rows = liveCredits ?? props?.creditRows ?? status?.credits?.summary?.accounts ?? []
+      const current = rows[0]
+      const state = !rows.length ? 'credit-loading' : current?.ok ? 'credit-ok' : 'credit-error'
+      const tail = shortAccountLabel(current?.label)
+      const value = current?.ok && Number.isFinite(current.total) ? fmt(current.total) : '—'
+      const failedRow = rows.find(row => !row?.ok)
+      const reason = String(failedRow?.error || (error ? '余额更新失败' : ''))
+      const pill = { ...S.capsule, cursor: 'pointer', fontFamily: 'inherit', lineHeight: '18px' }
       return h('span', {
-        style: S.capsule,
-        title: 'Loomy ' + short + (reason ? ' · ' + reason : ''),
+        style: { display: 'inline-flex', alignItems: 'center', position: 'relative', maxWidth: '100%' },
         'data-loomy-gate-seat': seat,
         'data-loomy-gate-provider': 'loomy',
         'data-state': state,
         'data-loomy-credit-capsule': 'true',
-      }, short + ' · ' + value)
+        title: 'Loomy ' + tail + (reason ? ' · ' + reason : ''),
+      },
+        h('button', { type: 'button', style: pill,
+          onClick: () => setOpen(value => !value),
+          'aria-expanded': open, 'aria-label': '查看 Loomy 积分',
+          title: 'Loomy ' + tail + (reason ? ' · ' + reason : '') },
+          '✦ Loomy ', tail, ' · ', value, ' 积分', busy ? ' …' : ''),
+        open ? h('div', { role: 'dialog', 'aria-label': 'Loomy 积分明细',
+          'data-loomy-credit-panel': 'true',
+          style: { position: 'absolute', right: 0, bottom: 'calc(100% + 8px)',
+            zIndex: 200, width: 'min(310px, 85vw)', maxHeight: '340px',
+            overflowY: 'auto', padding: '12px', background: V.card, color: V.text,
+            border: '1px solid ' + V.border, borderRadius: '10px',
+            boxShadow: '0 8px 24px rgba(0,0,0,.24)' } },
+          h('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '8px' } },
+            h('strong', { style: { fontSize: '13px' } }, 'Loomy 账号积分'),
+            h('button', { type: 'button', style: S.button, onClick: () => setOpen(false),
+              'aria-label': '关闭积分明细' }, '×')),
+          error ? h('div', { role: 'status', style: { fontSize: '11px', color: V.warn } },
+            '最近一次读取失败，显示缓存结果') : null,
+          rows.length ? rows.map((row, index) => h('div', { key: row.id || index,
+            style: { padding: '7px 0', borderBottom: '1px solid ' + V.border } },
+            h('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '8px' } },
+              h('span', { style: S.small }, shortAccountLabel(row.label),
+                index === 0 ? h('span', { style: { fontSize: '10px', color: V.ok } }, ' · 当前优先账号') : null),
+              h('strong', { style: S.small }, row.ok ? fmt(row.total) + ' 积分' : '积分不可用')),
+            row.ok ? h('div', { style: S.tiny }, '永久 ', fmt(row.permanent), ' · 每日 ', fmt(row.daily)) :
+              h('div', { style: S.tiny }, '查询失败')
+          )) : h('div', { style: S.small }, busy ? '读取积分中…' : '暂无可用积分数据'),
+          h('div', { style: { display: 'flex', justifyContent: 'space-between',
+            alignItems: 'center', gap: '6px', paddingTop: '9px' } },
+            h('span', { style: S.tiny }, '只显示优先账号余额，不合并不同账号'),
+            h('button', { type: 'button', style: S.button, disabled: busy,
+              'data-action': 'refresh-composer-credits', onClick: () => read(true) },
+              busy ? '刷新中' : '刷新积分'))
+        ) : null
+      )
     }
 
     function gateInject(seat, applyCtx) {
-      // Desktop slot systems differ: some hand the projection hook to the
-      // inject callback, others expose it on the plugin ctx or owner props.
-      // Capture every available source without overriding host projections.
+      // Preserve both DSH Desktop variants: a projection hook may arrive in
+      // the injected slot context or directly on the component's host props.
       return (hostCtx) => {
         const source = hostCtx || applyCtx || {}
-        return {
-          seat,
+        return { seat,
           ...(typeof source.useProjection === 'function' ? { useProjection: source.useProjection } : {}),
           ...(typeof source.getProjection === 'function' ? { getProjection: source.getProjection } : {}),
         }

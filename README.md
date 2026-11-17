@@ -1,6 +1,13 @@
 # DSH Connect Loomy
 
-DSH Desktop provider adapter for Loomy (local 0.5.0 source snapshot).
+## 0.5.1 - Composer credit balance
+- Shows the **selected eligible account** Loomy points beside the DSH model selector, never a misleading sum across different accounts.
+- The badge is provider-scoped (modelSelection) and respects the existing composer/dock location and polling settings.
+- Clicking the badge opens per-account masked balance details; refresh is explicitly requested using the existing read-only balance-refresh route.
+- Preserves the original host tool permission flow. The current DSH installation is not modified by this release.
+- Added offline composer tests, plus the surviving integration tests after a minimal end-of-file syntax repair; full desktop UI visual acceptance remains pending.
+
+DSH Desktop provider adapter for Loomy (local 0.5.1 source snapshot).
 
 ## Features
 - Account pool, model listing, local sign-in integration and read-only credit information.
@@ -11,7 +18,7 @@ DSH Desktop provider adapter for Loomy (local 0.5.0 source snapshot).
 
 ## Tests
 Run `npm test` for all included offline tests.
-A pre-existing local integration test was excluded from this snapshot because its local copy was incomplete. Do not claim that excluded test was validated.
+A pre-existing local integration test was truncated; the local source was preserved separately, and only its closing syntax was minimally repaired. Its surviving assertions are included and tested; any lost original tail was not reconstructed.
 
 ## Security
 See [SECURITY.md](SECURITY.md). Local backups, captured diagnostics and all session data are excluded.
@@ -23,7 +30,7 @@ Tool-enabled turns buffer responses until validation is complete; native product
 
 ## 中文说明
 
-**DSH Connect Loomy** 是讯飞 Loomy 接入 DeepSeek Harness Desktop 的社区插件（v0.5.0）。提供流式聊天、模型目录、多账号池、只读额度、图像及可选本地回环网关；非官方项目。
+**DSH Connect Loomy** 是讯飞 Loomy 接入 DeepSeek Harness Desktop 的社区插件（v0.5.1）。提供流式聊天、模型目录、多账号池、只读额度、图像及可选本地回环网关；非官方项目。
 
 ### 核心功能
 
