@@ -8,6 +8,15 @@ import { FALLBACK_MODELS } from './registry.mjs'
 const INJECTED_CONTEXT_RE = /<(system-reminder|working-context|environment-context|command-message|local-command-stdout)\b[\s\S]*?<\/\1>/gi
 const TOOL_SOURCE_RE = /\b(?:tools?\.)?(?:run_code|bash|read|grep|glob|edit|write|str_replace_editor|subagent|ask_user_question)\s*\(/i
 const MAX_TOOL_REPAIR_ATTEMPTS = 3
+const MAX_RETRYABLE_STREAM_DISCONNECTS_PER_ACCOUNT = 1
+
+/** Only treat a recognized socket drop as retriable, never arbitrary failures. */
+export function isRetryableStreamDisconnect(error) {
+  if (!(error instanceof Error)) return false
+  if (error instanceof TypeError && error.message === 'terminated') return true
+  return error.cause?.code === 'UND_ERR_SOCKET'
+}
+
 
 /** Capability hints are strictly limited to DSH's actual offered tools. */
 export function toolDiscoveryGuidance(tools) {
@@ -188,6 +197,7 @@ export function createLoomyAdapter(input) {
     for (const session of accounts) {
       attempt++
       let repairNote = ''
+      let transportRetries = 0
       for (let repairRound = 0; repairRound < MAX_TOOL_REPAIR_ATTEMPTS; repairRound++) {
       const body = repairNote ? { ...baseBody, messages: [prompt,
         { role: 'system', content: repairNote }, ...baseMessages] } : baseBody
@@ -320,6 +330,22 @@ export function createLoomyAdapter(input) {
         yield { type: 'finish', reason: calls.length ? { kind: 'tool-calls' } : (lengthCapped ? { kind: 'max-tokens' } : { kind: 'stop' }) }
         return
       } catch (error) {
+        if (options.signal?.aborted) {
+          yield { type: 'finish', reason: { kind: 'aborted',
+            failure: { message: 'request aborted by caller' } } }
+          return
+        }
+        // The tool-enabled stream has not emitted any host-visible events
+        // while chat() is incomplete. Retry the current account at most once
+        // for a known socket break; no DSH tool invocation can be repeated.
+        if (!completed && isRetryableStreamDisconnect(error) &&
+            transportRetries < MAX_RETRYABLE_STREAM_DISCONNECTS_PER_ACCOUNT &&
+            repairRound + 1 < MAX_TOOL_REPAIR_ATTEMPTS) {
+          transportRetries++
+          log('warn', 'Loomy upstream HTTP stream disconnected before DSH tool dispatch; ' +
+            'retrying current account once')
+          continue
+        }
         markFailure?.(session.id, String(error?.message ?? error))
         log('error', 'tool stream failed on account ' + attempt + ': ' + String(error?.message ?? error))
         if (attempt >= accounts.length) throw error

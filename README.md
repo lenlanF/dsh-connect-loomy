@@ -1,5 +1,14 @@
 # DSH Connect Loomy
 
+## 0.5.3：上游 SSE 连接中断的有界恢复（2026-11-17）
+
+- 真实 DSH 会话记录中，`todo_write` 返回成功后，后续模型执行阶段出现 `UNKNOWN / terminated`；这不是一次 `TOOL_PROTOCOL` 拒绝。原始日志缺少网络底层 cause，**尚不能证明该次断开必然来自网络**。
+- 用本机临时 HTTP/SSE 服务实际模拟中途断开，Node.js 复现 `TypeError: terminated`、`cause.code=UND_ERR_SOCKET`。对**工具模式且尚未完成模型响应、未向 DSH 发出任何 tool-call 的阶段**，这种可识别的连接中断仅自动重试 1 次，同一账号、使用相同宿主工具清单；失败两次后仍按原规则报错或切换后备账号。
+- DSH 主动取消、工具参数/权限拒绝、未知非网络异常均不会被此机制重试；不自动执行宿主工具。网络重试会再次请求上游模型，**可能产生额外模型用量/积分**，不保证所有连接异常都能恢复。
+- 新增 `tests/network-recovery.test.mjs` 6 项，覆盖真实本机 HTTP 断流恢复、仅一次重试、用户取消、未知错误、杜绝半截模型响应进入 DSH；项目 `npm test` 128/128 通过（退出码 0）。安装运行中的 DSH 插件未改动。
+- 对 DSH 宿主 `session_event_search` 的独立只读核查：42/42 份原始 Zstandard JSONL 日志完整；DSH 自带 SQLite 会话搜索使用内存索引，持久化快照最多重试 2 次，持续变更可能导致 `SESSION_QUERY_PERSISTENCE_FAILED`。**未能证实该次错误的底层原因**，不建议删除或重置历史会话；不修改 DSH 本体。
+- 后续验收：安装新版后在 Loomy 新会话验证真实长任务连续执行，观察是否仍有 `terminated`；动态工具实际增删与恢复仍需宿主产生真实变化才能验证。
+
 ## 0.5.2 - DSH current-turn tool declarations and safe recovery
 
 - Removed unimplemented toolUpdate: addition-only capability. The DSH host supplies complete current-turn ToolSchema declarations instead.
@@ -15,7 +24,7 @@
 - Preserves the original host tool permission flow. The current DSH installation is not modified by this release.
 - Added offline composer tests, plus the surviving integration tests after a minimal end-of-file syntax repair; full desktop UI visual acceptance remains pending.
 
-DSH Desktop provider adapter for Loomy (local 0.5.2 source snapshot).
+DSH Desktop provider adapter for Loomy (local 0.5.3 source snapshot).
 
 ## Features
 - Account pool, model listing, local sign-in integration and read-only credit information.
