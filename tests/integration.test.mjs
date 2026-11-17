@@ -192,7 +192,7 @@ test('adapter listModels/resolveModel/status/invalidateCatalog use fake catalog'
     { provider: PROVIDER, id: 'm1', name: 'M1', inputModalities: ['text'], contextWindow: 100, maxTokens: 20, reasoning: true },
   ])
   assert.deepEqual(await adapter.resolveModel(PROVIDER, 'm1'), {
-    provider: PROVIDER, id: 'm1', name: 'M1', inputModalities: ['text'], toolUpdate: 'addition-only', context: { contextWindow: 100 }, defaultMaxTokens: 20,
+    provider: PROVIDER, id: 'm1', name: 'M1', inputModalities: ['text'], context: { contextWindow: 100 }, defaultMaxTokens: 20,
   })
   assert.deepEqual(adapter.status(), { provider: PROVIDER, catalogSize: 1 })
   adapter.invalidateCatalog()

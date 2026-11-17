@@ -1,7 +1,5 @@
-// Native DSH LlmAdapter. Mirrors the verified dsh-connect-lingxi StreamChunk
-// contract: block-start / text-delta / reasoning-delta / block-end / usage /
-// finish. Tool-call blocks are flattened into text rather than inventing an
-// unverified tool-call-delta shape.
+// Native DSH LlmAdapter. Only current-turn tool declarations are forwarded;
+// approval and execution remain with the DSH host, not this provider.
 import { randomUUID } from 'node:crypto'
 import { visibleTools, openAiTools, recoverHostToolCalls, normalizedArguments, stringifyToolValue, removeToolMarkers } from './host-tools.mjs'
 import { CATALOG_TTL_MS, PROVIDER } from './registry.mjs'
@@ -9,6 +7,49 @@ import { FALLBACK_MODELS } from './registry.mjs'
 
 const INJECTED_CONTEXT_RE = /<(system-reminder|working-context|environment-context|command-message|local-command-stdout)\b[\s\S]*?<\/\1>/gi
 const TOOL_SOURCE_RE = /\b(?:tools?\.)?(?:run_code|bash|read|grep|glob|edit|write|str_replace_editor|subagent|ask_user_question)\s*\(/i
+const MAX_TOOL_REPAIR_ATTEMPTS = 3
+
+/** Capability hints are strictly limited to DSH's actual offered tools. */
+export function toolDiscoveryGuidance(tools) {
+  const offered = visibleTools(tools).map((tool) => tool.name)
+  const names = new Set(offered)
+  const discovery = [
+    names.has('plugin_market') ? 'plugin_market can search supported plugins.' : '',
+    names.has('plugin_manager') ? 'plugin_manager can inspect installed/disabled plugins.' : '',
+  ].filter(Boolean)
+  return '[DSH HOST TOOL BOUNDARY] Only these DSH tools are callable this turn: ' + offered.join(', ') + '. ' +
+    'Never request other tool names, even if a similar tool is installed in the profile. ' +
+    'A missing todo_write is optional: plan in ordinary text and continue work using offered tools. ' +
+    (discovery.length ? discovery.join(' ') : 'No plugin discovery tools are offered this turn. ') +
+    'Before declaring a task blocked, try an equivalent offered tool. ' +
+    'Do not install or enable plugins, elevate rights or change permissions without explicit user authorization. ' +
+    'Host tools are executed by DSH, never by Loomy or this adapter.'
+}
+
+function safeToolName(value) {
+  return typeof value === 'string' && /^[A-Za-z_][A-Za-z0-9_.-]{0,79}$/.test(value)
+    ? value : '[invalid-name]'
+}
+
+function safeProtocolReason(reason) {
+  const value = String(reason ?? '')
+  for (const prefix of ['Tool is not available in this DSH session: ', 'Invalid JSON tool arguments for ']) {
+    if (value.startsWith(prefix)) return prefix + safeToolName(value.slice(prefix.length))
+  }
+  const known = new Set(['Malformed DSH tool marker', 'Malformed tool-call JSON',
+    'Incomplete or malformed tool-call JSON', 'Too many tool calls',
+    'No host tools are available in this turn', 'Tool response exceeded the safe size limit'])
+  return known.has(value) ? value : 'Invalid DSH tool request'
+}
+
+function toolRepairGuidance(reason, tools) {
+  // Never echo raw arguments, secret text or transcripts into retry prompts.
+  return '[DSH TOOL REQUEST REJECTED] ' + safeProtocolReason(reason) + '. No calls from the rejected response were executed. ' +
+    toolDiscoveryGuidance(tools) +
+    ' Reissue only an authorized valid tool call, or explain the limitation as ordinary text. ' +
+    'Do not claim any tool ran if DSH did not execute it.'
+}
+
 
 /**
  * Flatten DSH content into plain text without shipping host tool payloads to
@@ -118,7 +159,6 @@ export function createLoomyAdapter(input) {
       id: model,
       name: found?.name ?? model,
       inputModalities: found?.inputModalities ?? ['text'],
-      toolUpdate: 'addition-only',
       ...found?.contextWindow !== undefined ? { context: { contextWindow: found.contextWindow } } : {},
       ...found?.maxTokens !== undefined ? { defaultMaxTokens: found.maxTokens } : {},
     }
@@ -135,16 +175,22 @@ export function createLoomyAdapter(input) {
       yield { type: 'finish', reason: { kind: 'aborted', failure: { message: 'request aborted by caller' } } }
       return
     }
-    const body = {
+    const baseMessages = toChatMessages(options)
+    const prompt = { role: 'system', content: toolDiscoveryGuidance(hostTools) }
+    const baseBody = {
       model: options.model,
-      messages: toChatMessages(options),
+      messages: [prompt, ...baseMessages],
       maxTokens: options.maxTokens ?? options.max_tokens,
-      tools: openAiTools(options.tools),
+      tools: openAiTools(hostTools),
       toolChoice: options.toolChoice ?? 'auto',
     }
     let attempt = 0
     for (const session of accounts) {
       attempt++
+      let repairNote = ''
+      for (let repairRound = 0; repairRound < MAX_TOOL_REPAIR_ATTEMPTS; repairRound++) {
+      const body = repairNote ? { ...baseBody, messages: [prompt,
+        { role: 'system', content: repairNote }, ...baseMessages] } : baseBody
       const contentEvents = []
       const native = new Map()
       let usage
@@ -183,22 +229,42 @@ export function createLoomyAdapter(input) {
         let calls = []
         if (native.size) {
           if (native.size > 8) throw new Error('Too many upstream tool calls')
+          let protocolIssue = ''
           for (const [, call] of [...native.entries()].sort((a, b) => a[0] - b[0])) {
             const args = normalizedArguments(call.arguments)
             if (!allowed.has(call.name) || args === null) {
-              yield { type: 'finish', reason: { kind: 'error', failure: {
-                code: 'TOOL_PROTOCOL', message: 'Loomy returned an unavailable tool or malformed tool arguments: ' + String(call.name),
-              } } }
-              return
+              protocolIssue = !allowed.has(call.name)
+                ? 'Tool is not available in this DSH session: ' + safeToolName(call.name)
+                : 'Invalid JSON tool arguments for ' + safeToolName(call.name)
+              break
             }
             calls.push({ id: call.id || ('call_' + randomUUID()), name: call.name, arguments: args })
+          }
+          if (protocolIssue) {
+            // Reject the entire batch, including earlier valid calls, atomically.
+            if (repairRound + 1 < MAX_TOOL_REPAIR_ATTEMPTS) {
+              log('warn', 'unoffered/malformed host tool request rejected; round=' + (repairRound + 1) +
+                ' offered_count=' + allowed.size)
+              repairNote = toolRepairGuidance(protocolIssue, hostTools)
+              continue
+            }
+            yield { type: 'finish', reason: { kind: 'error', failure: {
+              code: 'TOOL_PROTOCOL', message: 'Loomy returned an invalid native tool request: ' + protocolIssue,
+            } } }
+            return
           }
         }
         const text = contentEvents.filter((e) => e.type === 'text').map((e) => e.text).join('')
         if (!calls.length) {
           const recovered = recoverHostToolCalls(text, options.tools)
           if (recovered.status === 'invalid') {
-            yield { type: 'finish', reason: { kind: 'error', failure: { code: 'TOOL_PROTOCOL', message: recovered.message } } }
+            if (repairRound + 1 < MAX_TOOL_REPAIR_ATTEMPTS) {
+              repairNote = toolRepairGuidance(recovered.message, hostTools)
+              continue
+            }
+            yield { type: 'finish', reason: { kind: 'error', failure: {
+              code: 'TOOL_PROTOCOL', message: safeProtocolReason(recovered.message),
+            } } }
             return
           }
           if (recovered.status === 'calls') {
@@ -257,9 +323,12 @@ export function createLoomyAdapter(input) {
         markFailure?.(session.id, String(error?.message ?? error))
         log('error', 'tool stream failed on account ' + attempt + ': ' + String(error?.message ?? error))
         if (attempt >= accounts.length) throw error
+        break // transport failure: switch account rather than retry protocol
       }
-    }
-  }
+      } // bounded repair attempts for this Loomy account
+    } // account failover
+  } // streamWithTools
+
 
   async function* stream(options) {
     if (visibleTools(options?.tools).length) {

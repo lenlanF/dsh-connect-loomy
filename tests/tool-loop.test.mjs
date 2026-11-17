@@ -74,14 +74,16 @@ test('real native tool_calls preserve names, args and ID, then tool result gets 
 })
 
 test('unknown native call is rejected before emitting any call blocks', async () => {
-  const { adapter } = fixture([[{ type: 'tool-call-delta', index: 0, name: 'unoffered', argumentsDelta: '{}' }, { type: 'done' }]])
+  const invalid = [{ type: 'tool-call-delta', index: 0, name: 'unoffered', argumentsDelta: '{}' }, { type: 'done' }]
+  const { adapter } = fixture([invalid, invalid, invalid])
   const out = await collect(adapter.stream({ model: 'model-1', tools: TOOLS, messages: [] }))
   assert.equal(out.at(-1).reason.kind, 'error')
   assert.equal(out.some((x) => x.type === 'tool-call-delta'), false)
 })
 
 test('invalid textual JSON protocol is rejected without calling DSH', async () => {
-  const { adapter } = fixture([[{ type: 'text', text: '<dsh_tool>{"name":"run_code","arguments":"invalid"}</dsh_tool>' }, { type: 'done' }]])
+  const invalid = [{ type: 'text', text: '<dsh_tool>{"name":"run_code","arguments":"invalid"}</dsh_tool>' }, { type: 'done' }]
+  const { adapter } = fixture([invalid, invalid, invalid])
   const out = await collect(adapter.stream({ model: 'model-1', tools: TOOLS, messages: [] }))
   assert.equal(out.at(-1).reason.kind, 'error')
   assert.equal(out.some((x) => x.type === 'tool-call-delta'), false)

@@ -1,5 +1,13 @@
 # DSH Connect Loomy
 
+## 0.5.2 - DSH current-turn tool declarations and safe recovery
+
+- Removed unimplemented toolUpdate: addition-only capability. The DSH host supplies complete current-turn ToolSchema declarations instead.
+- Each native tool request remains strictly constrained to tool names actually offered in that turn. Invalid/mixed batches are rejected atomically before any DSH tool call.
+- When upstream returns an unoffered tool such as todo_write or malformed arguments, Loomy may retry with specific feedback and the true offered-tool inventory (at most three requests, then fail closed).
+- Optional todo_write is never a prerequisite: the model can plan in text and use other permitted tools. plugin_market and plugin_manager are mentioned only when the host offered them, and no plugin installation/activation or permission change is automatic.
+- Added offline tests for unknown-tool recovery, bounded retries, current-turn inventory changes, mixed batches, provider guidance and sanitized errors. The local release has not been installed in DSH Desktop; full host tool execution still requires a separate live acceptance test.
+
 ## 0.5.1 - Composer credit balance
 - Shows the **selected eligible account** Loomy points beside the DSH model selector, never a misleading sum across different accounts.
 - The badge is provider-scoped (modelSelection) and respects the existing composer/dock location and polling settings.
@@ -7,7 +15,7 @@
 - Preserves the original host tool permission flow. The current DSH installation is not modified by this release.
 - Added offline composer tests, plus the surviving integration tests after a minimal end-of-file syntax repair; full desktop UI visual acceptance remains pending.
 
-DSH Desktop provider adapter for Loomy (local 0.5.1 source snapshot).
+DSH Desktop provider adapter for Loomy (local 0.5.2 source snapshot).
 
 ## Features
 - Account pool, model listing, local sign-in integration and read-only credit information.
@@ -30,7 +38,7 @@ Tool-enabled turns buffer responses until validation is complete; native product
 
 ## 中文说明
 
-**DSH Connect Loomy** 是讯飞 Loomy 接入 DeepSeek Harness Desktop 的社区插件（v0.5.1）。提供流式聊天、模型目录、多账号池、只读额度、图像及可选本地回环网关；非官方项目。
+**DSH Connect Loomy** 是讯飞 Loomy 接入 DeepSeek Harness Desktop 的社区插件（v0.5.2）。提供流式聊天、模型目录、多账号池、只读额度、图像及可选本地回环网关；非官方项目。
 
 ### 核心功能
 
